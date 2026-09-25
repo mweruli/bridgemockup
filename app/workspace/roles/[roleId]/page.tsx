@@ -15,17 +15,21 @@ import {
 } from "@/components/ui";
 import {
   ApiError,
+  Company,
   Permission,
   Role,
   RoleUser,
   assignUserRole,
+  cloneRole,
   deleteRole,
   getRole,
   listGrantablePermissions,
+  listMyCompanies,
   listRoleUsers,
   listUsers,
   setRolePermissions,
   unassignUserRole,
+  updateRole,
 } from "@/lib/api";
 import { useSession } from "@/lib/session";
 
@@ -40,10 +44,18 @@ export default function RoleDetailPage() {
   const [holders, setHolders] = useState<RoleUser[] | null>(null);
   const [allUsers, setAllUsers] = useState<RoleUser[]>([]);
   const [assignUserId, setAssignUserId] = useState("");
+  const [companies, setCompanies] = useState<Company[]>([]);
+
+  const [name, setName] = useState("");
+  const [cloneCompanyId, setCloneCompanyId] = useState("");
+  const [cloneName, setCloneName] = useState("");
+  const [cloneCode, setCloneCode] = useState("");
 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [savingName, setSavingName] = useState(false);
+  const [cloning, setCloning] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -55,6 +67,7 @@ export default function RoleDetailPage() {
       listRoleUsers(session.accessToken, params.roleId, 1, 200),
     ]);
     setRole(roleResult);
+    setName(roleResult.name);
     setGrantable(grantableResult.items);
     setSelected(new Set(roleResult.permissions.map((p) => p.code)));
     setHolders(holdersResult.items);
@@ -67,6 +80,7 @@ export default function RoleDetailPage() {
       setError(err instanceof ApiError ? err.message : "Unable to load this role.");
     });
     listUsers(session.accessToken).then(setAllUsers).catch(() => setAllUsers([]));
+    listMyCompanies(session.accessToken).then(setCompanies).catch(() => setCompanies([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, params.roleId]);
 
@@ -87,6 +101,42 @@ export default function RoleDetailPage() {
       else next.add(code);
       return next;
     });
+  }
+
+  async function handleSaveName(e: React.FormEvent) {
+    e.preventDefault();
+    if (!session || !role) return;
+    setError(null);
+    setNotice(null);
+    setSavingName(true);
+    try {
+      const updated = await updateRole(session.accessToken, role.role_id, name);
+      setRole(updated);
+      setNotice("Role renamed.");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to rename this role.");
+    } finally {
+      setSavingName(false);
+    }
+  }
+
+  async function handleClone(e: React.FormEvent) {
+    e.preventDefault();
+    if (!session || !role || !cloneCompanyId) return;
+    setError(null);
+    setNotice(null);
+    setCloning(true);
+    try {
+      const clone = await cloneRole(session.accessToken, role.role_id, {
+        company_id: cloneCompanyId,
+        name: cloneName,
+        code: cloneCode,
+      });
+      router.push(`/workspace/roles/${clone.role_id}`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to clone this role.");
+      setCloning(false);
+    }
   }
 
   async function handleSavePermissions() {
@@ -241,59 +291,132 @@ export default function RoleDetailPage() {
           )}
         </Card>
 
-        <Card>
-          <h2 className="text-sm font-semibold text-slate-900">Assigned users</h2>
-
+        <div className="space-y-6">
           {editable && (
-            <form onSubmit={handleAssign} className="mt-3 flex gap-2">
-              <select
-                className="flex-1 rounded-lg border border-slate-200 px-2 py-2 text-xs outline-none focus:border-blue-500"
-                value={assignUserId}
-                onChange={(e) => setAssignUserId(e.target.value)}
-              >
-                <option value="">Select a user…</option>
-                {assignableUsers.map((u) => (
-                  <option key={u.user_id} value={u.user_id}>
-                    {u.full_name} ({u.username})
-                  </option>
-                ))}
-              </select>
-              <SecondaryButton
-                type="submit"
-                disabled={!assignUserId}
-                loading={assigning}
-                className="px-3 py-2 text-xs"
-              >
-                Assign
-              </SecondaryButton>
-            </form>
+            <Card>
+              <h2 className="text-sm font-semibold text-slate-900">Role name</h2>
+              <form onSubmit={handleSaveName} className="mt-3 flex gap-2">
+                <input
+                  className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  maxLength={100}
+                  required
+                />
+                <SecondaryButton
+                  type="submit"
+                  loading={savingName}
+                  disabled={name === role.name}
+                  className="px-3 py-2 text-xs"
+                >
+                  Save
+                </SecondaryButton>
+              </form>
+            </Card>
           )}
 
-          <div className="mt-4 space-y-2">
-            {holders.length === 0 ? (
-              <EmptyState message="No one holds this role yet." />
-            ) : (
-              holders.map((holder) => (
-                <div
-                  key={holder.user_id}
-                  className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2"
+          {role.company_id === null && (
+            <Card>
+              <h2 className="text-sm font-semibold text-slate-900">Clone this template</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Copies its permission set into a new role owned by one of your companies.
+              </p>
+              <form onSubmit={handleClone} className="mt-3 space-y-2">
+                <select
+                  className="w-full rounded-lg border border-slate-200 px-2 py-2 text-xs outline-none focus:border-blue-500"
+                  value={cloneCompanyId}
+                  onChange={(e) => setCloneCompanyId(e.target.value)}
+                  required
                 >
-                  <div>
-                    <div className="text-sm font-medium text-slate-800">{holder.full_name}</div>
-                    <div className="text-xs text-slate-400">{holder.username}</div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleUnassign(holder.user_id)}
-                    className="text-xs font-medium text-red-500 hover:underline"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))
+                  <option value="">Select a company…</option>
+                  {companies.map((c) => (
+                    <option key={c.company_id} value={c.company_id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="w-full rounded-lg border border-slate-200 px-2 py-2 text-xs outline-none focus:border-blue-500"
+                  value={cloneName}
+                  onChange={(e) => setCloneName(e.target.value)}
+                  placeholder="New role name"
+                  maxLength={100}
+                  required
+                />
+                <input
+                  className="w-full rounded-lg border border-slate-200 px-2 py-2 text-xs outline-none focus:border-blue-500"
+                  value={cloneCode}
+                  onChange={(e) => setCloneCode(e.target.value)}
+                  placeholder="new_role_code"
+                  maxLength={100}
+                  required
+                />
+                <SecondaryButton
+                  type="submit"
+                  loading={cloning}
+                  disabled={!cloneCompanyId}
+                  className="w-full px-3 py-2 text-xs"
+                >
+                  Clone
+                </SecondaryButton>
+              </form>
+            </Card>
+          )}
+
+          <Card>
+            <h2 className="text-sm font-semibold text-slate-900">Assigned users</h2>
+
+            {editable && (
+              <form onSubmit={handleAssign} className="mt-3 flex gap-2">
+                <select
+                  className="flex-1 rounded-lg border border-slate-200 px-2 py-2 text-xs outline-none focus:border-blue-500"
+                  value={assignUserId}
+                  onChange={(e) => setAssignUserId(e.target.value)}
+                >
+                  <option value="">Select a user…</option>
+                  {assignableUsers.map((u) => (
+                    <option key={u.user_id} value={u.user_id}>
+                      {u.full_name} ({u.username})
+                    </option>
+                  ))}
+                </select>
+                <SecondaryButton
+                  type="submit"
+                  disabled={!assignUserId}
+                  loading={assigning}
+                  className="px-3 py-2 text-xs"
+                >
+                  Assign
+                </SecondaryButton>
+              </form>
             )}
-          </div>
-        </Card>
+
+            <div className="mt-4 space-y-2">
+              {holders.length === 0 ? (
+                <EmptyState message="No one holds this role yet." />
+              ) : (
+                holders.map((holder) => (
+                  <div
+                    key={holder.user_id}
+                    className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2"
+                  >
+                    <div>
+                      <div className="text-sm font-medium text-slate-800">{holder.full_name}</div>
+                      <div className="text-xs text-slate-400">{holder.username}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleUnassign(holder.user_id)}
+                      className="text-xs font-medium text-red-500 hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+        </div>
       </div>
     </div>
   );

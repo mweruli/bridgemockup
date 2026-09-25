@@ -194,6 +194,24 @@ export function deleteRole(accessToken: string, roleId: string): Promise<void> {
   return authedFetch(accessToken, `/rbac/roles/${roleId}`, { method: "DELETE" });
 }
 
+export function updateRole(accessToken: string, roleId: string, name: string): Promise<Role> {
+  return authedFetch(accessToken, `/rbac/roles/${roleId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function cloneRole(
+  accessToken: string,
+  roleId: string,
+  payload: { company_id: string; name: string; code: string },
+): Promise<Role> {
+  return authedFetch(accessToken, `/rbac/roles/${roleId}/clone`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function setRolePermissions(
   accessToken: string,
   roleId: string,
