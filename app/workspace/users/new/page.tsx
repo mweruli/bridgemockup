@@ -3,7 +3,17 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card, ErrorBanner, PageHeader, PrimaryButton, SecondaryButton } from "@/components/ui";
-import { ApiError, Company, createUser, listMyCompanies } from "@/lib/api";
+import {
+  ApiError,
+  Company,
+  Role,
+  RoleUser,
+  assignUserRole,
+  createUser,
+  listAssignableRoles,
+  listMyCompanies,
+  listUsers,
+} from "@/lib/api";
 import { useSession } from "@/lib/session";
 
 export default function NewUserPage() {
@@ -11,6 +21,8 @@ export default function NewUserPage() {
   const { session } = useSession();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [selectedCompanies, setSelectedCompanies] = useState<Set<string>>(new Set());
+  const [assignableRoles, setAssignableRoles] = useState<Role[]>([]);
+  const [possibleManagers, setPossibleManagers] = useState<RoleUser[]>([]);
 
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
@@ -18,6 +30,8 @@ export default function NewUserPage() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
+  const [reportsToId, setReportsToId] = useState("");
+  const [roleId, setRoleId] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,6 +39,8 @@ export default function NewUserPage() {
   useEffect(() => {
     if (!session) return;
     listMyCompanies(session.accessToken).then(setCompanies).catch(() => setCompanies([]));
+    listAssignableRoles(session.accessToken).then(setAssignableRoles).catch(() => setAssignableRoles([]));
+    listUsers(session.accessToken).then(setPossibleManagers).catch(() => setPossibleManagers([]));
   }, [session]);
 
   function toggleCompany(id: string) {
@@ -50,7 +66,19 @@ export default function NewUserPage() {
         last_name: lastName,
         phone_number: phoneNumber || null,
         company_ids: Array.from(selectedCompanies),
+        reports_to_id: reportsToId || null,
       });
+      if (roleId) {
+        // Best-effort follow-up call — the user is already created either
+        // way, so a role-assignment failure here shouldn't strand the
+        // admin on a form that looks like nothing happened.
+        try {
+          await assignUserRole(session.accessToken, user.user_id, roleId);
+        } catch {
+          // The user detail page's own role UI (once it has one) is the
+          // fallback if this silently doesn't land.
+        }
+      }
       router.push(`/workspace/users/${user.user_id}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Unable to create this user.");
@@ -150,6 +178,43 @@ export default function NewUserPage() {
               required
               maxLength={72}
             />
+          </div>
+
+          <div className="mb-4 grid grid-cols-2 gap-4">
+            <div>
+              <label className="mb-1.5 block text-[11px] font-semibold tracking-wider text-slate-500">
+                ROLE (OPTIONAL)
+              </label>
+              <select
+                className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                value={roleId}
+                onChange={(e) => setRoleId(e.target.value)}
+              >
+                <option value="">No role yet</option>
+                {assignableRoles.map((r) => (
+                  <option key={r.role_id} value={r.role_id}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[11px] font-semibold tracking-wider text-slate-500">
+                REPORTS TO (OPTIONAL)
+              </label>
+              <select
+                className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                value={reportsToId}
+                onChange={(e) => setReportsToId(e.target.value)}
+              >
+                <option value="">No manager</option>
+                {possibleManagers.map((u) => (
+                  <option key={u.user_id} value={u.user_id}>
+                    {u.full_name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="mb-6">

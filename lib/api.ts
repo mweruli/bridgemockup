@@ -165,6 +165,8 @@ export interface RoleUser {
   full_name: string;
   phone_number: string | null;
   is_active: boolean;
+  reports_to_id: string | null;
+  role_codes: string[];
   companies: Company[];
 }
 
@@ -246,6 +248,23 @@ export function listGrantablePermissions(
   );
 }
 
+// Not a backend endpoint — composed client-side from listRoles + the
+// grantable-permissions set, so a role picker only ever shows roles the
+// caller could actually successfully assign (their full permission set
+// is a subset of what the caller holds). Mirrors the same "don't even
+// show it" reasoning behind /rbac/permissions/grantable, without needing
+// a matching /rbac/roles/assignable endpoint on the backend.
+export async function listAssignableRoles(accessToken: string): Promise<Role[]> {
+  const [rolesPage, grantablePage] = await Promise.all([
+    listRoles(accessToken, 1, 200),
+    listGrantablePermissions(accessToken, 1, 200),
+  ]);
+  const grantableCodes = new Set(grantablePage.items.map((p) => p.code));
+  return rolesPage.items.filter((role) =>
+    role.permissions.every((p) => grantableCodes.has(p.code)),
+  );
+}
+
 export function assignUserRole(
   accessToken: string,
   userId: string,
@@ -288,6 +307,7 @@ export function createUser(
     last_name: string;
     phone_number?: string | null;
     company_ids?: string[];
+    reports_to_id?: string | null;
   },
 ): Promise<RoleUser> {
   return authedFetch(accessToken, "/users", {
@@ -304,6 +324,7 @@ export function updateUser(
     last_name?: string;
     phone_number?: string | null;
     is_active?: boolean;
+    reports_to_id?: string | null;
   },
 ): Promise<RoleUser> {
   return authedFetch(accessToken, `/users/${userId}`, {
