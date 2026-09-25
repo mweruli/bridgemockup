@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Badge, Card, EmptyState, ErrorBanner, PageHeader, Spinner } from "@/components/ui";
+import { Badge, Card, EmptyState, ErrorBanner, LinkButton, PageHeader, Spinner } from "@/components/ui";
 import { ApiError, RoleUser, listUsers } from "@/lib/api";
 import { useSession } from "@/lib/session";
 
@@ -25,6 +26,7 @@ export default function UsersPage() {
       <PageHeader
         title="Users"
         description="Everyone you share a company with. Manage role assignments from a role's page."
+        action={<LinkButton href="/workspace/users/new">+ New User</LinkButton>}
       />
 
       {error && <ErrorBanner message={error} />}
@@ -50,7 +52,14 @@ export default function UsersPage() {
             <tbody>
               {users.map((user) => (
                 <tr key={user.user_id} className="border-b border-slate-50 last:border-0">
-                  <td className="px-6 py-3 font-medium text-slate-900">{user.full_name}</td>
+                  <td className="px-6 py-3">
+                    <Link
+                      href={`/workspace/users/${user.user_id}`}
+                      className="font-medium text-slate-900 hover:text-blue-600"
+                    >
+                      {user.full_name}
+                    </Link>
+                  </td>
                   <td className="px-6 py-3 text-slate-500">{user.username}</td>
                   <td className="px-6 py-3 text-slate-500">{user.email}</td>
                   <td className="px-6 py-3 text-slate-500">

@@ -255,3 +255,62 @@ export function unassignUserRole(
 export function listUsers(accessToken: string): Promise<RoleUser[]> {
   return authedFetch(accessToken, "/users");
 }
+
+export function getUser(accessToken: string, userId: string): Promise<RoleUser> {
+  return authedFetch(accessToken, `/users/${userId}`);
+}
+
+export function createUser(
+  accessToken: string,
+  payload: {
+    username: string;
+    email: string;
+    password: string;
+    first_name: string;
+    last_name: string;
+    phone_number?: string | null;
+    company_ids?: string[];
+  },
+): Promise<RoleUser> {
+  return authedFetch(accessToken, "/users", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateUser(
+  accessToken: string,
+  userId: string,
+  payload: {
+    first_name?: string;
+    last_name?: string;
+    phone_number?: string | null;
+    is_active?: boolean;
+  },
+): Promise<RoleUser> {
+  return authedFetch(accessToken, `/users/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function addUserCompany(
+  accessToken: string,
+  userId: string,
+  companyId: string,
+): Promise<RoleUser> {
+  return authedFetch(accessToken, `/users/${userId}/companies`, {
+    method: "POST",
+    body: JSON.stringify({ company_id: companyId }),
+  });
+}
+
+export function removeUserCompany(
+  accessToken: string,
+  userId: string,
+  companyId: string,
+): Promise<RoleUser> {
+  return authedFetch(accessToken, `/users/${userId}/companies/${companyId}`, {
+    method: "DELETE",
+  });
+}
