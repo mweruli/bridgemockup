@@ -1,12 +1,12 @@
 "use client";
 
 import { ButtonHTMLAttributes, FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
 import { AuthCard, FieldLabel } from "@/components/AuthCard";
 import { BrandPanel } from "@/components/BrandPanel";
 import {
   ApiError,
   OtpChannel,
-  UserProfile,
   fetchMe,
   forgotPassword,
   login,
@@ -14,12 +14,12 @@ import {
   sendOtp,
   verifyOtp,
 } from "@/lib/api";
+import { useSession } from "@/lib/session";
 
 type Step =
   | "login"
   | "otp-channel"
   | "otp-verify"
-  | "success"
   | "forgot-email"
   | "forgot-reset";
 
@@ -101,6 +101,8 @@ function PrimaryButton({
 }
 
 export default function Home() {
+  const router = useRouter();
+  const { setSession } = useSession();
   const [step, setStep] = useState<Step>("login");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -116,9 +118,6 @@ export default function Home() {
   const [channels, setChannels] = useState<OtpChannel[]>([]);
   const [channel, setChannel] = useState<OtpChannel | null>(null);
   const [otpCode, setOtpCode] = useState("");
-
-  // session
-  const [profile, setProfile] = useState<UserProfile | null>(null);
 
   // forgot password
   const [forgotEmail, setForgotEmail] = useState("");
@@ -169,9 +168,9 @@ export default function Home() {
     setLoading(true);
     try {
       const tokens = await verifyOtp(pendingToken, otpCode);
-      const me = await fetchMe(tokens.access_token);
-      setProfile(me);
-      setStep("success");
+      const profile = await fetchMe(tokens.access_token);
+      setSession({ accessToken: tokens.access_token, profile });
+      router.push("/workspace");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "That code didn't work. Please try again.");
     } finally {
@@ -391,47 +390,6 @@ export default function Home() {
               ← Choose a different channel
             </button>
           </form>
-        )}
-
-        {step === "success" && profile && (
-          <div>
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
-              ✓
-            </div>
-            <h1 className="mt-4 text-2xl font-bold text-slate-900">Welcome, {profile.full_name}</h1>
-            <p className="mt-1 text-sm text-slate-500">You&apos;re signed in to the Bridge Talent workspace.</p>
-
-            <div className="mt-6 space-y-2 rounded-lg bg-slate-50 p-4 text-sm">
-              <div className="flex justify-between">
-                <span className="text-slate-400">Username</span>
-                <span className="font-medium text-slate-700">{profile.username}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Email</span>
-                <span className="font-medium text-slate-700">{profile.email}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Roles</span>
-                <span className="font-medium text-slate-700">{profile.roles.join(", ") || "—"}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Companies</span>
-                <span className="font-medium text-slate-700">{profile.companies.join(", ") || "—"}</span>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                setProfile(null);
-                setUsername("");
-                backToLogin();
-              }}
-              className="mt-6 w-full text-center text-xs font-medium text-blue-600 hover:underline"
-            >
-              Sign out
-            </button>
-          </div>
         )}
 
         {step === "forgot-email" && (

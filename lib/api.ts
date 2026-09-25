@@ -102,3 +102,156 @@ export async function resetPassword(
   if (!response.ok) throw new ApiError(await parseErrorDetail(response));
   return (await response.json()).message as string;
 }
+
+// ---------------------------------------------------------------------
+// Authenticated JSON helper — every endpoint below needs a Bearer token.
+// ---------------------------------------------------------------------
+
+async function authedFetch<T>(
+  accessToken: string,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: {
+      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      Authorization: `Bearer ${accessToken}`,
+      ...init.headers,
+    },
+  });
+  if (!response.ok) throw new ApiError(await parseErrorDetail(response));
+  if (response.status === 204) return undefined as T;
+  return response.json();
+}
+
+export interface Page<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface Company {
+  company_id: string;
+  name: string;
+  code: string;
+  company_type: string;
+  is_active: boolean;
+}
+
+export interface Permission {
+  permission_id: string;
+  code: string;
+  module: string;
+  description: string;
+}
+
+export interface Role {
+  role_id: string;
+  company_id: string | null;
+  name: string;
+  code: string;
+  is_system: boolean;
+  permissions: Permission[];
+}
+
+export interface RoleUser {
+  user_id: string;
+  username: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  full_name: string;
+  phone_number: string | null;
+  is_active: boolean;
+  companies: Company[];
+}
+
+export function listMyCompanies(accessToken: string): Promise<Company[]> {
+  return authedFetch(accessToken, "/companies");
+}
+
+export function listRoles(accessToken: string, page = 1, pageSize = 50): Promise<Page<Role>> {
+  return authedFetch(accessToken, `/rbac/roles?page=${page}&page_size=${pageSize}`);
+}
+
+export function getRole(accessToken: string, roleId: string): Promise<Role> {
+  return authedFetch(accessToken, `/rbac/roles/${roleId}`);
+}
+
+export function createRole(
+  accessToken: string,
+  payload: { name: string; code: string; company_id?: string | null },
+): Promise<Role> {
+  return authedFetch(accessToken, "/rbac/roles", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteRole(accessToken: string, roleId: string): Promise<void> {
+  return authedFetch(accessToken, `/rbac/roles/${roleId}`, { method: "DELETE" });
+}
+
+export function setRolePermissions(
+  accessToken: string,
+  roleId: string,
+  permissionCodes: string[],
+): Promise<Role> {
+  return authedFetch(accessToken, `/rbac/roles/${roleId}/permissions`, {
+    method: "PUT",
+    body: JSON.stringify({ permission_codes: permissionCodes }),
+  });
+}
+
+export function listRoleUsers(
+  accessToken: string,
+  roleId: string,
+  page = 1,
+  pageSize = 50,
+): Promise<Page<RoleUser>> {
+  return authedFetch(
+    accessToken,
+    `/rbac/roles/${roleId}/users?page=${page}&page_size=${pageSize}`,
+  );
+}
+
+export function listGrantablePermissions(
+  accessToken: string,
+  page = 1,
+  pageSize = 200,
+): Promise<Page<Permission>> {
+  return authedFetch(
+    accessToken,
+    `/rbac/permissions/grantable?page=${page}&page_size=${pageSize}`,
+  );
+}
+
+export function assignUserRole(
+  accessToken: string,
+  userId: string,
+  roleId: string,
+): Promise<Role> {
+  return authedFetch(accessToken, `/rbac/users/${userId}/roles`, {
+    method: "POST",
+    body: JSON.stringify({ role_id: roleId }),
+  });
+}
+
+export function unassignUserRole(
+  accessToken: string,
+  userId: string,
+  roleId: string,
+): Promise<void> {
+  return authedFetch(accessToken, `/rbac/users/${userId}/roles/${roleId}`, {
+    method: "DELETE",
+  });
+}
+
+// /users is not paginated (out of scope for the RBAC batch this mockup
+// otherwise mirrors) — returns a bare array, unlike the /rbac/* list
+// endpoints above.
+export function listUsers(accessToken: string): Promise<RoleUser[]> {
+  return authedFetch(accessToken, "/users");
+}
