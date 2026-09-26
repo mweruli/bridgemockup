@@ -32,6 +32,7 @@ export default function NewUserPage() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [reportsToId, setReportsToId] = useState("");
   const [roleId, setRoleId] = useState("");
+  const [pendingCompanyId, setPendingCompanyId] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,11 +44,16 @@ export default function NewUserPage() {
     listUsers(session.accessToken).then(setPossibleManagers).catch(() => setPossibleManagers([]));
   }, [session]);
 
-  function toggleCompany(id: string) {
+  function addCompany() {
+    if (!pendingCompanyId) return;
+    setSelectedCompanies((prev) => new Set(prev).add(pendingCompanyId));
+    setPendingCompanyId("");
+  }
+
+  function removeCompany(id: string) {
     setSelectedCompanies((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      next.delete(id);
       return next;
     });
   }
@@ -219,23 +225,57 @@ export default function NewUserPage() {
 
           <div className="mb-6">
             <label className="mb-1.5 block text-[11px] font-semibold tracking-wider text-slate-500">
-              COMPANIES
+              COMPANIES ASSIGNED
             </label>
-            <div className="space-y-1.5 rounded-lg border border-slate-200 p-3">
-              {companies.length === 0 ? (
-                <p className="text-xs text-slate-400">No companies available.</p>
+            <div className="flex gap-2">
+              <select
+                className="flex-1 rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                value={pendingCompanyId}
+                onChange={(e) => setPendingCompanyId(e.target.value)}
+              >
+                <option value="">Select a company…</option>
+                {companies
+                  .filter((c) => !selectedCompanies.has(c.company_id))
+                  .map((c) => (
+                    <option key={c.company_id} value={c.company_id}>
+                      {c.name}
+                    </option>
+                  ))}
+              </select>
+              <SecondaryButton
+                type="button"
+                onClick={addCompany}
+                disabled={!pendingCompanyId}
+                className="px-3 py-2 text-xs"
+              >
+                Add
+              </SecondaryButton>
+            </div>
+
+            <div className="mt-3 space-y-2">
+              {selectedCompanies.size === 0 ? (
+                <p className="text-xs text-slate-400">
+                  Not assigned to any company yet — a supervisor overseeing several client
+                  companies can add each one here.
+                </p>
               ) : (
-                companies.map((c) => (
-                  <label key={c.company_id} className="flex items-center gap-2 text-sm text-slate-700">
-                    <input
-                      type="checkbox"
-                      className="accent-blue-600"
-                      checked={selectedCompanies.has(c.company_id)}
-                      onChange={() => toggleCompany(c.company_id)}
-                    />
-                    {c.name}
-                  </label>
-                ))
+                companies
+                  .filter((c) => selectedCompanies.has(c.company_id))
+                  .map((c) => (
+                    <div
+                      key={c.company_id}
+                      className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2"
+                    >
+                      <span className="text-sm font-medium text-slate-800">{c.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeCompany(c.company_id)}
+                        className="text-xs font-medium text-red-500 hover:underline"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))
               )}
             </div>
           </div>
