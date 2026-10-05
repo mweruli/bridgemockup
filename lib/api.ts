@@ -1,28 +1,66 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 export class ApiError extends Error {
-  constructor(message: string) {
+  status: number;
+  code: string | null;
+  data: Record<string, unknown>;
+  retryAfter: number | null;
+
+  constructor(message: string, status = 0, data: Record<string, unknown> = {}, retryAfter: number | null = null) {
     super(message);
     this.name = "ApiError";
+    this.status = status;
+    this.data = data;
+    this.code = typeof data.code === "string" ? data.code : null;
+    this.retryAfter = retryAfter;
   }
 }
 
-async function parseErrorDetail(response: Response): Promise<string> {
+// Builds an ApiError carrying the backend's machine-readable `code` and extra
+// fields (attempts_remaining, retry_after, full_name...). Falls back to the
+// plain `detail` string, or flattens FastAPI's 422 validation list.
+async function errorFrom(response: Response): Promise<ApiError> {
+  let data: Record<string, unknown> = {};
+  let message = response.statusText || "Request failed";
   try {
-    const body = await response.json();
-    if (typeof body.detail === "string") return body.detail;
-    return JSON.stringify(body.detail ?? body);
+    data = await response.json();
+    if (typeof data.detail === "string") {
+      message = data.detail;
+    } else if (Array.isArray(data.detail)) {
+      message = data.detail
+        .map((d: { msg?: string }) => (d.msg ?? "").replace(/^Value error, /, ""))
+        .filter(Boolean)
+        .join("; ");
+    }
   } catch {
-    return response.statusText || "Request failed";
+    // non-JSON body: keep statusText
   }
+  const header = Number(response.headers.get("Retry-After"));
+  const retryAfter = Number.isFinite(header) && header > 0 ? header : null;
+  return new ApiError(message, response.status, data, retryAfter);
 }
 
 export type OtpChannel = "email" | "sms";
+
+export interface ChannelOption {
+  channel: OtpChannel;
+  destination: string;
+  recommended: boolean;
+}
 
 export interface LoginChallenge {
   otp_required: true;
   pending_token: string;
   available_channels: OtpChannel[];
+  channels: ChannelOption[];
+  full_name: string;
+  email: string;
+}
+
+export interface PasswordPolicy {
+  min_length: number;
+  max_length: number;
+  rules: { id: string; label: string }[];
 }
 
 export interface TokenResponse {
@@ -48,7 +86,7 @@ export async function login(username: string, password: string): Promise<LoginCh
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
   });
-  if (!response.ok) throw new ApiError(await parseErrorDetail(response));
+  if (!response.ok) throw await errorFrom(response);
   return response.json();
 }
 
@@ -58,7 +96,7 @@ export async function sendOtp(pendingToken: string, channel: OtpChannel): Promis
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pending_token: pendingToken, channel }),
   });
-  if (!response.ok) throw new ApiError(await parseErrorDetail(response));
+  if (!response.ok) throw await errorFrom(response);
 }
 
 export async function verifyOtp(pendingToken: string, otpCode: string): Promise<TokenResponse> {
@@ -67,7 +105,7 @@ export async function verifyOtp(pendingToken: string, otpCode: string): Promise<
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pending_token: pendingToken, otp_code: otpCode }),
   });
-  if (!response.ok) throw new ApiError(await parseErrorDetail(response));
+  if (!response.ok) throw await errorFrom(response);
   return response.json();
 }
 
@@ -75,8 +113,24 @@ export async function fetchMe(accessToken: string): Promise<UserProfile> {
   const response = await fetch(`${API_URL}/auth/me`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  if (!response.ok) throw new ApiError(await parseErrorDetail(response));
+  if (!response.ok) throw await errorFrom(response);
   return response.json();
+}
+
+export async function fetchPasswordPolicy(): Promise<PasswordPolicy> {
+  const response = await fetch(`${API_URL}/auth/password-policy`);
+  if (!response.ok) throw await errorFrom(response);
+  return response.json();
+}
+
+export async function fetchRecoveryChannels(email: string): Promise<ChannelOption[]> {
+  const response = await fetch(`${API_URL}/auth/forgot-password/channels`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  if (!response.ok) throw await errorFrom(response);
+  return (await response.json()).channels as ChannelOption[];
 }
 
 export async function forgotPassword(email: string, channel: OtpChannel): Promise<string> {
@@ -85,22 +139,28 @@ export async function forgotPassword(email: string, channel: OtpChannel): Promis
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, channel }),
   });
-  if (!response.ok) throw new ApiError(await parseErrorDetail(response));
+  if (!response.ok) throw await errorFrom(response);
   return (await response.json()).message as string;
+}
+
+export interface ResetResult {
+  message: string;
+  access_token: string;
+  refresh_token: string;
 }
 
 export async function resetPassword(
   email: string,
   otpCode: string,
   newPassword: string,
-): Promise<string> {
+): Promise<ResetResult> {
   const response = await fetch(`${API_URL}/auth/reset-password`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, otp_code: otpCode, new_password: newPassword }),
   });
-  if (!response.ok) throw new ApiError(await parseErrorDetail(response));
-  return (await response.json()).message as string;
+  if (!response.ok) throw await errorFrom(response);
+  return response.json();
 }
 
 // ---------------------------------------------------------------------
@@ -120,7 +180,7 @@ async function authedFetch<T>(
       ...init.headers,
     },
   });
-  if (!response.ok) throw new ApiError(await parseErrorDetail(response));
+  if (!response.ok) throw await errorFrom(response);
   if (response.status === 204) return undefined as T;
   return response.json();
 }

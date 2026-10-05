@@ -1,13 +1,17 @@
 "use client";
 
-import { ButtonHTMLAttributes, FormEvent, useState } from "react";
+import { ButtonHTMLAttributes, FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthCard, FieldLabel } from "@/components/AuthCard";
 import { BrandPanel } from "@/components/BrandPanel";
 import {
   ApiError,
+  ChannelOption,
   OtpChannel,
+  PasswordPolicy,
   fetchMe,
+  fetchPasswordPolicy,
+  fetchRecoveryChannels,
   forgotPassword,
   login,
   resetPassword,
@@ -18,10 +22,51 @@ import { useSession } from "@/lib/session";
 
 type Step =
   | "login"
+  | "inactive"
   | "otp-channel"
   | "otp-verify"
   | "forgot-email"
+  | "forgot-channel"
   | "forgot-reset";
+
+function useCountdown() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    if (seconds <= 0) return;
+    const timer = setTimeout(() => setSeconds((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [seconds]);
+  return [seconds, setSeconds] as const;
+}
+
+function formatClock(total: number) {
+  const minutes = Math.floor(total / 60);
+  const seconds = String(total % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function ruleMet(id: string, password: string, policy: PasswordPolicy) {
+  switch (id) {
+    case "min_length":
+      return password.length >= policy.min_length;
+    case "uppercase":
+      return /[A-Z]/.test(password);
+    case "lowercase":
+      return /[a-z]/.test(password);
+    case "number":
+      return /\d/.test(password);
+    case "symbol":
+      return /[^A-Za-z0-9]/.test(password);
+    default:
+      return false;
+  }
+}
+
+function attemptsSuffix(err: ApiError, noun: string) {
+  const left = err.data.attempts_remaining;
+  if (typeof left !== "number") return "";
+  return left === 1 ? ` 1 ${noun} left.` : ` ${left} ${noun}s left.`;
+}
 
 const inputClasses =
   "w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-10 pr-10 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100";
@@ -115,15 +160,27 @@ export default function Home() {
 
   // otp
   const [pendingToken, setPendingToken] = useState("");
-  const [channels, setChannels] = useState<OtpChannel[]>([]);
+  const [channelOptions, setChannelOptions] = useState<ChannelOption[]>([]);
   const [channel, setChannel] = useState<OtpChannel | null>(null);
   const [otpCode, setOtpCode] = useState("");
+  const [account, setAccount] = useState<{ name: string; email: string } | null>(null);
+
+  // countdowns driven by the backend: lockout and resend cooldown
+  const [lockSeconds, setLockSeconds] = useCountdown();
+  const [resendSeconds, setResendSeconds] = useCountdown();
 
   // forgot password
   const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotChannels, setForgotChannels] = useState<ChannelOption[]>([]);
   const [forgotChannel, setForgotChannel] = useState<OtpChannel>("email");
   const [forgotOtp, setForgotOtp] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [policy, setPolicy] = useState<PasswordPolicy | null>(null);
+
+  useEffect(() => {
+    if (step !== "forgot-reset" || policy) return;
+    fetchPasswordPolicy().then(setPolicy).catch(() => {});
+  }, [step, policy]);
 
   function resetMessages() {
     setError(null);
@@ -137,11 +194,32 @@ export default function Home() {
     try {
       const challenge = await login(username, password);
       setPendingToken(challenge.pending_token);
-      setChannels(challenge.available_channels);
-      setChannel(challenge.available_channels[0] ?? null);
+      // Older backends don't send masked `channels`/`full_name` yet; fall back
+      // to the plain channel list so the mockup still works against them.
+      const options: ChannelOption[] =
+        challenge.channels ??
+        challenge.available_channels.map((c, i) => ({
+          channel: c,
+          destination: c === "email" ? "your email" : "your phone",
+          recommended: i === 0,
+        }));
+      setChannelOptions(options);
+      setChannel((options.find((c) => c.recommended) ?? options[0])?.channel ?? null);
+      setAccount(challenge.full_name ? { name: challenge.full_name, email: challenge.email } : null);
       setStep("otp-channel");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Unable to sign in. Please try again.");
+      if (!(err instanceof ApiError)) {
+        setError("Unable to sign in. Please try again.");
+      } else if (err.code === "account_locked") {
+        setLockSeconds(err.retryAfter ?? Number(err.data.retry_after) ?? 900);
+      } else if (err.code === "account_inactive") {
+        setAccount({ name: String(err.data.full_name ?? ""), email: String(err.data.email ?? "") });
+        setStep("inactive");
+      } else if (err.code === "invalid_credentials") {
+        setError(`${err.message}.${attemptsSuffix(err, "attempt")}`);
+      } else {
+        setError(err.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -153,10 +231,17 @@ export default function Home() {
     setLoading(true);
     try {
       await sendOtp(pendingToken, channel);
-      setNotice(`We sent a 6-digit code to your ${channel === "email" ? "email" : "phone"}.`);
+      const destination = channelOptions.find((c) => c.channel === channel)?.destination;
+      setNotice(`We sent a 6-digit code to ${destination ?? "you"}. It expires in 10 minutes.`);
+      setResendSeconds(60);
       setStep("otp-verify");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Unable to send the code. Please try again.");
+      if (err instanceof ApiError && err.code === "otp_resend_limit") {
+        setResendSeconds(err.retryAfter ?? 3600);
+        setError("You've requested too many codes. Try again when the timer ends.");
+      } else {
+        setError(err instanceof ApiError ? err.message : "Unable to send the code. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -172,14 +257,35 @@ export default function Home() {
       setSession({ accessToken: tokens.access_token, profile });
       router.push("/workspace");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "That code didn't work. Please try again.");
+      if (err instanceof ApiError && err.code === "otp_attempts_exhausted") {
+        setError("Too many incorrect codes. Request a new code to continue.");
+      } else if (err instanceof ApiError) {
+        setError(`Code incorrect or expired.${attemptsSuffix(err, "attempt")}`);
+      } else {
+        setError("That code didn't work. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleForgotPassword(e: FormEvent) {
+  async function handleForgotEmail(e: FormEvent) {
     e.preventDefault();
+    resetMessages();
+    setLoading(true);
+    try {
+      const options = await fetchRecoveryChannels(forgotEmail);
+      setForgotChannels(options);
+      setForgotChannel((options.find((c) => c.recommended) ?? options[0]).channel);
+      setStep("forgot-channel");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to process that request.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleForgotPassword() {
     resetMessages();
     setLoading(true);
     try {
@@ -198,11 +304,18 @@ export default function Home() {
     resetMessages();
     setLoading(true);
     try {
-      const message = await resetPassword(forgotEmail, forgotOtp, newPassword);
-      setNotice(message);
-      setStep("login");
+      const result = await resetPassword(forgotEmail, forgotOtp, newPassword);
+      const profile = await fetchMe(result.access_token);
+      setSession({ accessToken: result.access_token, profile });
+      router.push("/workspace");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Unable to reset password.");
+      if (err instanceof ApiError && err.code === "password_unchanged") {
+        setError("Your new password must be different from your current one.");
+      } else if (err instanceof ApiError && err.code?.startsWith("otp_")) {
+        setError(`Code incorrect or expired.${attemptsSuffix(err, "attempt")}`);
+      } else {
+        setError(err instanceof ApiError ? err.message : "Unable to reset password.");
+      }
     } finally {
       setLoading(false);
     }
@@ -226,10 +339,19 @@ export default function Home() {
             <h1 className="text-2xl font-bold text-slate-900">Sign In</h1>
             <p className="mt-1 text-sm text-slate-500">Access your Bridge Talent workspace</p>
 
+            {lockSeconds > 0 && (
+              <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-800">
+                <p className="font-semibold">Account temporarily locked</p>
+                <p className="mt-1">
+                  Too many failed attempts. You can try again in{" "}
+                  <span className="font-mono font-semibold">{formatClock(lockSeconds)}</span>.
+                </p>
+              </div>
+            )}
             {error && <div className="mt-5"><ErrorBanner message={error} /></div>}
 
             <div className="mt-6">
-              <FieldLabel>USERNAME</FieldLabel>
+              <FieldLabel>WORK EMAIL OR USERNAME</FieldLabel>
               <div className="relative">
                 <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
                   <MailIcon />
@@ -241,7 +363,7 @@ export default function Home() {
                   required
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="jsmith"
+                  placeholder="name@company.com"
                 />
               </div>
             </div>
@@ -287,7 +409,7 @@ export default function Home() {
             </div>
 
             <div className="mt-6">
-              <PrimaryButton type="submit" loading={loading}>
+              <PrimaryButton type="submit" loading={loading} disabled={lockSeconds > 0}>
                 Sign In to Workspace
                 <ArrowIcon />
               </PrimaryButton>
@@ -295,32 +417,73 @@ export default function Home() {
           </form>
         )}
 
+        {step === "inactive" && (
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Your account is no longer active</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              This usually happens when an assignment or contract ends. If you think this is a
+              mistake, contact your HR administrator or Bridge Talent support.
+            </p>
+            {account && (
+              <div className="mt-6 rounded-lg bg-slate-50 px-4 py-3">
+                <p className="text-sm font-semibold text-slate-900">{account.name}</p>
+                <p className="text-xs text-slate-500">{account.email}</p>
+                <span className="mt-2 inline-block rounded bg-red-100 px-2 py-0.5 text-[10px] font-bold tracking-wide text-red-600">
+                  DEACTIVATED
+                </span>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={backToLogin}
+              className="mt-6 w-full text-center text-sm font-medium text-blue-600 hover:underline"
+            >
+              ← Back to sign in
+            </button>
+          </div>
+        )}
+
         {step === "otp-channel" && (
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Verify it&apos;s you</h1>
+            <h1 className="text-2xl font-bold text-slate-900">Two-step verification</h1>
             <p className="mt-1 text-sm text-slate-500">
-              Choose where we should send your verification code.
+              Choose where to receive your 6-digit verification code.
             </p>
+
+            {account && (
+              <div className="mt-5 rounded-lg bg-slate-50 px-4 py-3">
+                <p className="text-sm font-semibold text-slate-900">{account.name}</p>
+                <p className="text-xs text-slate-500">{account.email}</p>
+              </div>
+            )}
 
             {error && <div className="mt-5"><ErrorBanner message={error} /></div>}
 
             <div className="mt-6 space-y-2">
-              {channels.map((c) => (
+              {channelOptions.map((c) => (
                 <label
-                  key={c}
+                  key={c.channel}
                   className={`flex cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 text-sm transition ${
-                    channel === c ? "border-blue-500 bg-blue-50" : "border-slate-200 hover:bg-slate-50"
+                    channel === c.channel ? "border-blue-500 bg-blue-50" : "border-slate-200 hover:bg-slate-50"
                   }`}
                 >
                   <input
                     type="radio"
                     name="channel"
                     className="accent-blue-600"
-                    checked={channel === c}
-                    onChange={() => setChannel(c)}
+                    checked={channel === c.channel}
+                    onChange={() => setChannel(c.channel)}
                   />
                   <span className="text-slate-700">
-                    {c === "email" ? "Send code to email" : "Send code via SMS"}
+                    <span className="flex items-center gap-2 font-medium">
+                      {c.channel === "email" ? "Email" : "SMS"}
+                      {c.recommended && (
+                        <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+                          Recommended
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-xs text-slate-500">{c.destination}</span>
                   </span>
                 </label>
               ))}
@@ -328,7 +491,7 @@ export default function Home() {
 
             <div className="mt-6">
               <PrimaryButton type="button" loading={loading} onClick={handleSendOtp}>
-                Send Code
+                Send verification code
                 <ArrowIcon />
               </PrimaryButton>
             </div>
@@ -382,6 +545,18 @@ export default function Home() {
               </PrimaryButton>
             </div>
 
+            <div className="mt-4 flex items-center justify-between text-xs">
+              <span className="text-slate-400">Didn&apos;t receive it?</span>
+              <button
+                type="button"
+                disabled={resendSeconds > 0 || loading}
+                onClick={handleSendOtp}
+                className="font-medium text-blue-600 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
+              >
+                {resendSeconds > 0 ? `Resend code (${formatClock(resendSeconds)})` : "Resend code"}
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={() => setStep("otp-channel")}
@@ -393,10 +568,10 @@ export default function Home() {
         )}
 
         {step === "forgot-email" && (
-          <form onSubmit={handleForgotPassword}>
+          <form onSubmit={handleForgotEmail}>
             <h1 className="text-2xl font-bold text-slate-900">Reset Password</h1>
             <p className="mt-1 text-sm text-slate-500">
-              We&apos;ll send a reset code to your account.
+              Enter your work email and we&apos;ll help you recover your account.
             </p>
 
             {error && <div className="mt-5"><ErrorBanner message={error} /></div>}
@@ -418,31 +593,9 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="mt-4 flex gap-2">
-              {(["email", "sms"] as OtpChannel[]).map((c) => (
-                <label
-                  key={c}
-                  className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition ${
-                    forgotChannel === c
-                      ? "border-blue-500 bg-blue-50 text-blue-700"
-                      : "border-slate-200 text-slate-500 hover:bg-slate-50"
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="forgot-channel"
-                    className="hidden"
-                    checked={forgotChannel === c}
-                    onChange={() => setForgotChannel(c)}
-                  />
-                  {c === "email" ? "Email" : "SMS"}
-                </label>
-              ))}
-            </div>
-
             <div className="mt-6">
               <PrimaryButton type="submit" loading={loading}>
-                Send Reset Code
+                Continue
                 <ArrowIcon />
               </PrimaryButton>
             </div>
@@ -455,6 +608,62 @@ export default function Home() {
               ← Back to sign in
             </button>
           </form>
+        )}
+
+        {step === "forgot-channel" && (
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Choose a verification channel</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              Select where Bridge Talent should send your 6-digit recovery code.
+            </p>
+
+            {error && <div className="mt-5"><ErrorBanner message={error} /></div>}
+
+            <div className="mt-6 space-y-2">
+              {forgotChannels.map((c) => (
+                <label
+                  key={c.channel}
+                  className={`flex cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 text-sm transition ${
+                    forgotChannel === c.channel ? "border-blue-500 bg-blue-50" : "border-slate-200 hover:bg-slate-50"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="forgot-channel"
+                    className="accent-blue-600"
+                    checked={forgotChannel === c.channel}
+                    onChange={() => setForgotChannel(c.channel)}
+                  />
+                  <span className="text-slate-700">
+                    <span className="flex items-center gap-2 font-medium">
+                      {c.channel === "email" ? "Work email" : "SMS"}
+                      {c.recommended && (
+                        <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+                          Recommended
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-xs text-slate-500">{c.destination}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            <div className="mt-6">
+              <PrimaryButton type="button" loading={loading} onClick={handleForgotPassword}>
+                Send recovery code
+                <ArrowIcon />
+              </PrimaryButton>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => { resetMessages(); setStep("forgot-email"); }}
+              className="mt-4 w-full text-center text-xs font-medium text-slate-400 hover:text-slate-600"
+            >
+              ← Use a different email
+            </button>
+          </div>
         )}
 
         {step === "forgot-reset" && (
@@ -499,17 +708,32 @@ export default function Home() {
                   className={`${inputClasses} pr-3`}
                   type="password"
                   required
-                  minLength={8}
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   placeholder="••••••••"
                 />
               </div>
+              {policy && (
+                <ul className="mt-3 space-y-1">
+                  {policy.rules.map((rule) => {
+                    const ok = ruleMet(rule.id, newPassword, policy);
+                    return (
+                      <li
+                        key={rule.id}
+                        className={`flex items-center gap-2 text-xs ${ok ? "text-emerald-600" : "text-slate-400"}`}
+                      >
+                        <span aria-hidden>{ok ? "✓" : "○"}</span>
+                        {rule.label}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </div>
 
             <div className="mt-6">
               <PrimaryButton type="submit" loading={loading}>
-                Reset Password
+                Reset password &amp; sign in
                 <ArrowIcon />
               </PrimaryButton>
             </div>
