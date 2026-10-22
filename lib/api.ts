@@ -231,7 +231,7 @@ export interface RoleUser {
 }
 
 export function listMyCompanies(accessToken: string): Promise<Company[]> {
-  return authedFetch(accessToken, "/companies");
+  return authedFetch(accessToken, "/companies/assigned");
 }
 
 export function listRoles(accessToken: string, page = 1, pageSize = 50): Promise<Page<Role>> {
